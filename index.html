@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AuraStrike White Edition | Omar Saeed</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+    <style>
+        body { margin: 0; background: #5c0000; overflow: hidden; }
+        body::after { content: ""; position: absolute; inset: 0; background: radial-gradient(circle, transparent 40%, #000 140%); z-index: 10; pointer-events: none; }
+        canvas { position: absolute; transform: scaleX(-1); width: 100vw; height: 100vh; z-index: 5; }
+        #video { display: none; }
+    </style>
+</head>
+<body>
+    <video id="video"></video>
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        let allPaths = []; 
+        let currentPath = null;
+        let grabbedPath = null;
+        let sparks = []; 
+        let lastHandPos = { x: 0, y: 0 };
+        let canUndo = true;
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
+
+        hands.onResults((results) => {
+            const currentHands = results.multiHandLandmarks;
+            const handInfo = results.multiHandedness;
+            let rightHand = null; let leftHand = null;
+
+            if (currentHands) {
+                currentHands.forEach((hand, index) => {
+                    if (handInfo[index].label === "Right") rightHand = hand;
+                    if (handInfo[index].label === "Left") leftHand = hand;
+                });
+            }
+
+            // --- الإيد الشمال (Undo) ---
+            if (leftHand) {
+                const isLeftFlat = leftHand[8].y < leftHand[6].y && leftHand[12].y < leftHand[10].y;
+                if (canUndo && isLeftFlat && allPaths.length > 0) {
+                    allPaths.pop();
+                    canUndo = false;
+                    for(let i=0; i<30; i++) sparks.push({ x: Math.random()*canvas.width, y: Math.random()*canvas.height, vx: (Math.random()-0.5)*20, vy: (Math.random()-0.5)*20, life: 1.0, hue: 0, size: 3 });
+                    setTimeout(() => { canUndo = true; }, 1000);
+                }
+            }
+
+            // --- الإيد اليمين (رسم وتحريك) ---
+            if (rightHand) {
+                const indexTip = rightHand[8]; const thumbTip = rightHand[4]; const middleTip = rightHand[12];
+                const x = (1 - indexTip.x) * canvas.width;
+                const y = indexTip.y * canvas.height;
+                const dist = Math.hypot(indexTip.x - thumbTip.x, indexTip.y - thumbTip.y);
+
+                if (dist < 0.05) {
+                    if (!grabbedPath) {
+                        allPaths.forEach(path => {
+                            if (path.some(p => Math.hypot(x - p.x, y - p.y) < 40)) grabbedPath = path;
+                        });
+                    }
+                    if (grabbedPath && lastHandPos.x !== 0) {
+                        const dx = x - lastHandPos.x; const dy = y - lastHandPos.y;
+                        grabbedPath.forEach(p => { p.x += dx; p.y += dy; });
+                    }
+                    lastHandPos = { x, y };
+                } else {
+                    grabbedPath = null; lastHandPos = { x: 0, y: 0 };
+                    if (indexTip.y < middleTip.y - 0.1) {
+                        if (!currentPath) { currentPath = []; allPaths.push(currentPath); }
+                        currentPath.push({ x, y });
+                        for(let i=0; i<8; i++) sparks.push({ x, y, vx: (Math.random()-0.5)*18, vy: (Math.random()-0.5)*18, life: 1.0, hue: 190, size: 3 });
+                    } else { currentPath = null; }
+                }
+            }
+            window.latestHands = currentHands;
+        });
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (window.latestHands) {
+                window.latestHands.forEach((hand) => {
+                    // رسم هيكل الإيد الأبيض المنور
+                    ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
+                    ctx.lineWidth = 2;
+                    ctx.shadowBlur = 15;
+                    ctx.shadowColor = "#fff";
+                    
+                    const connections = [[0,1,2,3,4], [0,5,6,7,8], [5,9,10,11,12], [9,13,14,15,16], [13,17,18,19,20], [0,17], [5,9,13,17]];
+                    connections.forEach(path => {
+                        ctx.beginPath();
+                        path.forEach((id, i) => {
+                            const pt = hand[id];
+                            const px = (1-pt.x)*canvas.width;
+                            const py = pt.y*canvas.height;
+                            if (i===0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+                        });
+                        ctx.stroke();
+                    });
+
+                    // رسم نقطة بيضاء منورة عند كل "عقلة" (Landmark)
+                    ctx.fillStyle = "#fff";
+                    hand.forEach(pt => {
+                        const px = (1-pt.x)*canvas.width;
+                        const py = pt.y*canvas.height;
+                        ctx.beginPath();
+                        ctx.arc(px, py, 3, 0, Math.PI*2); // نقطة صغيرة وأنيقة
+                        ctx.fill();
+                    });
+                    ctx.shadowBlur = 0;
+                });
+            }
+
+            // تحريك ورسم شرار الليزر
+            sparks.forEach((s, i) => {
+                const oldX = s.x; const oldY = s.y;
+                s.x += s.vx; s.y += s.vy; s.life -= 0.03;
+                if (s.life <= 0) sparks.splice(i, 1);
+                ctx.strokeStyle = `hsla(${s.hue}, 100%, 75%, ${s.life})`;
+                ctx.lineWidth = s.size;
+                ctx.shadowBlur = 10; ctx.shadowColor = ctx.strokeStyle;
+                ctx.beginPath(); ctx.moveTo(oldX, oldY); ctx.lineTo(s.x, s.y); ctx.stroke();
+                ctx.shadowBlur = 0;
+            });
+
+            // رسم المسارات (الرسمة نفسها)
+            allPaths.forEach(path => {
+                const isG = (path === grabbedPath);
+                ctx.shadowBlur = isG ? 30 : 15;
+                ctx.shadowColor = isG ? "#ff3e3e" : "#00f2ff";
+                ctx.strokeStyle = isG ? "#ff3e3e" : "#00f2ff";
+                ctx.lineWidth = 10;
+                ctx.lineCap = "round";
+                if (path.length > 1) {
+                    ctx.beginPath(); ctx.moveTo(path[0].x, path[0].y); path.forEach(p => ctx.lineTo(p.x, p.y)); ctx.stroke();
+                }
+            });
+            requestAnimationFrame(draw);
+        }
+
+        const cam = new Camera(document.getElementById('video'), {
+            onFrame: async () => { await hands.send({image: document.getElementById('video')}); },
+            width: 1280, height: 720
+        });
+        cam.start();
+        draw();
+    </script>
+</body>
+</html>
